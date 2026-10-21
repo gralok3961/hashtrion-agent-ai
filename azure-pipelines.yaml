@@ -1,0 +1,74 @@
+
+variables:
+  title: hashtrion-agent-ai
+  nodeVersion: '20.x'
+
+name: $(Build.Repository.Name)_$(Build.DefinitionName)_$(Build.SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- checkout: self
+  clean: true
+
+- task: NodeTool@0
+  inputs:
+    versionSpec: '$(nodeVersion)'
+  displayName: 'Install Node.js'
+
+- script: |
+    npm ci
+  displayName: 'Install Dependencies'
+
+- script: |
+    npm run build
+  displayName: 'Build Next.js App'
+
+- script: |
+    set -euo pipefail
+
+    test -f .next/standalone/server.js
+    test -f .next/standalone/package.json
+    test -f .next/standalone/node_modules/next/package.json
+    test -f .next/standalone/.next/BUILD_ID
+
+    # Next.js can copy these local files; Azure supplies runtime app settings.
+    rm -f .next/standalone/.env .next/standalone/.env.production
+
+    mkdir -p .next/standalone/.next
+    cp -R .next/static .next/standalone/.next/static
+
+    if [ -d "public" ]; then
+      cp -R public .next/standalone/public
+    fi
+  displayName: 'Prepare Standalone Package'
+
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: '$(Build.SourcesDirectory)/.next/standalone'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/drop.zip'
+    replaceExistingArchive: true
+  displayName: 'Archive Deployment Package'
+
+- script: |
+    set -euo pipefail
+
+    archive="$(Build.ArtifactStagingDirectory)/drop.zip"
+    unzip -tq "$archive"
+    unzip -Z1 "$archive" > "$archive.contents"
+    grep -Fx 'server.js' "$archive.contents"
+    grep -Fx 'package.json' "$archive.contents"
+    grep -Fx 'node_modules/next/package.json' "$archive.contents"
+    grep -Fx '.next/BUILD_ID' "$archive.contents"
+    grep -E '^\.next/static/.+\.(js|css)$' "$archive.contents" > /dev/null
+  displayName: 'Verify Deployment ZIP'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/drop.zip'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'
+  displayName: 'Publish Artifact'
